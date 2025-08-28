@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{error::Error, io::Error, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
@@ -26,15 +26,27 @@ struct Config {
     test: i32,
 }
 
-fn init_zk_working_dir(path: PathBuf) -> Result<(), Box<dyn Error>> {
+fn init_zk_working_dir<'a>(path: PathBuf) -> Result<PathBuf, std::io::Error> {
     let zk_conf_path = path.join(PathBuf::from(".zk.json"));
-    std::fs::File::create(zk_conf_path).and_then(|config_file| {
+    std::fs::File::create(&zk_conf_path).and_then(|file| {
         let init_config = Config { test: 5 };
-        serde_json::to_writer_pretty(config_file, &init_config)
+        match serde_json::to_writer_pretty(file, &init_config) {
+            Ok(_) => Ok(path),
+            Err(ser_err) => match std::fs::remove_file(&zk_conf_path) {
+                Ok(_) => Err(ser_err.into()),
+                Err(rm_file_err) => {
+                    let error_msg = format!(
+                        "Serialization error: {}\n\nRemove file error: {}",
+                        &ser_err, &rm_file_err
+                    );
+                    Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg))
+                }
+            },
+        }
     })
 }
 
-fn init(zk_directory: Option<std::path::PathBuf>) -> Result<(), Error> {
+fn init(zk_directory: Option<std::path::PathBuf>) -> Result<PathBuf, std::io::Error> {
     match zk_directory {
         Some(path) => Ok(path),
         None => std::env::current_dir(),
@@ -46,8 +58,12 @@ fn init(zk_directory: Option<std::path::PathBuf>) -> Result<(), Error> {
 fn main() {
     let args = Args::parse();
     match args.cmd {
-        Commands::Init { zk_directory } => {
-            let _init_res = init(zk_directory);
-        }
+        Commands::Init { zk_directory } => match init(zk_directory) {
+            Ok(init_dir) => println!(
+                "zk project created in {}",
+                init_dir.as_os_str().to_str().unwrap()
+            ),
+            Err(e) => eprintln!("{}", e),
+        },
     };
 }
