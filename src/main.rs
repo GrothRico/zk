@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{ffi::OsStr, io::Read, path::PathBuf, process::Command, time::UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 
@@ -18,6 +18,14 @@ struct Args {
 enum Commands {
     Init {
         zk_directory: Option<std::path::PathBuf>,
+    },
+    New {
+        #[arg(long, short = 'n')]
+        name: String,
+        #[arg(long, short = 'r')]
+        root: Option<String>,
+        #[arg(long, short = 'i', default_value_t = false)]
+        interactive: bool,
     },
 }
 
@@ -55,6 +63,42 @@ fn init(zk_directory: Option<std::path::PathBuf>) -> Result<PathBuf, std::io::Er
     .and_then(init_zk_working_dir)
 }
 
+fn get_env_var(key: &str, or: &str) -> String {
+    match std::env::var(key) {
+        Ok(env_var) => env_var,
+        Err(_) => or.into(),
+    }
+}
+
+fn user_edit_temp_file() -> Result<String, Box<dyn std::error::Error>> {
+    let temp_dir = std::env::temp_dir();
+    let pid = std::process::id();
+    let now = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_secs();
+    let temp_filepath = temp_dir.join(PathBuf::from(format!("{}_{}.md", pid, now)));
+    let editor = get_env_var("EDITOR", "vi");
+    let _ = Command::new(editor).arg(&temp_filepath).status()?;
+    let mut temp_file = std::fs::File::open(&temp_filepath)?;
+    let mut buffer = String::new();
+    let _ = temp_file.read_to_string(&mut buffer)?;
+    let _ = std::fs::remove_file(temp_filepath)?;
+    Ok(buffer)
+}
+
+fn new(
+    _name: String,
+    _root: Option<String>,
+    interactive: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // let file = std::fs::File::create_new(format!("{}.md", &name))?;
+    if interactive {
+        let user_content = user_edit_temp_file()?;
+        println!("{}", user_content)
+    }
+    Ok(())
+}
+
 fn main() {
     let args = Args::parse();
     match args.cmd {
@@ -64,6 +108,14 @@ fn main() {
                 init_dir.as_os_str().to_str().unwrap()
             ),
             Err(e) => eprintln!("{}", e),
+        },
+        Commands::New {
+            name,
+            root,
+            interactive,
+        } => match new(name, root, interactive) {
+            Ok(_) => println!("new done success"),
+            Err(_) => eprintln!("new error"),
         },
     };
 }
