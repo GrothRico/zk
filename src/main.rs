@@ -3,6 +3,8 @@ use std::{ffi::OsStr, io::Read, path::PathBuf, process::Command, time::UNIX_EPOC
 
 use clap::{Parser, Subcommand};
 
+type DynRes<T> = Result<T, Box<dyn std::error::Error>>;
+
 #[derive(Parser, Debug)]
 struct Args {
     #[command(subcommand)]
@@ -70,32 +72,55 @@ fn get_env_var(key: &str, or: &str) -> String {
     }
 }
 
-fn user_edit_temp_file() -> Result<String, Box<dyn std::error::Error>> {
+fn create_tempfile_path() -> DynRes<PathBuf> {
     let temp_dir = std::env::temp_dir();
     let pid = std::process::id();
     let now = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)?
         .as_secs();
-    let temp_filepath = temp_dir.join(PathBuf::from(format!("{}_{}.md", pid, now)));
+    Ok(temp_dir.join(PathBuf::from(format!("{}_{}", pid, now))))
+}
+
+fn use_editor(pre_existing_content: Option<String>) -> DynRes<String> {
+    let temp_filepath = create_tempfile_path()?;
+    if let Some(c) = pre_existing_content {
+        std::fs::write(&temp_filepath, &c)?;
+    }
     let editor = get_env_var("EDITOR", "vi");
-    let _ = Command::new(editor).arg(&temp_filepath).status()?;
-    let mut temp_file = std::fs::File::open(&temp_filepath)?;
-    let mut buffer = String::new();
-    let _ = temp_file.read_to_string(&mut buffer)?;
-    let _ = std::fs::remove_file(temp_filepath)?;
+    Command::new(editor).arg(&temp_filepath).status()?;
+    let buffer = std::fs::read_to_string(&temp_filepath)?;
+    std::fs::remove_file(&temp_filepath)?;
     Ok(buffer)
 }
 
+fn zk_workdir(global_arg: &Option<PathBuf>) -> DynRes<PathBuf> {
+    if let Some(dir) = global_arg {
+        return Ok(dir.to_path_buf());
+    }
+    let cwd = std::env::current_dir()?;
+    if cwd.join(PathBuf::from(".zk.json")).exists() {
+        return Ok(cwd);
+    }
+    let error = std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "Cannot find current zk working directory.",
+    );
+    Err(error.into())
+}
+
 fn new(
-    _name: String,
+    name: String,
     _root: Option<String>,
     interactive: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // let file = std::fs::File::create_new(format!("{}.md", &name))?;
-    if interactive {
-        let user_content = user_edit_temp_file()?;
-        println!("{}", user_content)
-    }
+    zk_directory: Option<PathBuf>,
+) -> DynRes<()> {
+    let header = format!("# {}", &name);
+    let content = match interactive {
+        true => use_editor(Some(header))?,
+        false => header,
+    };
+    let filepath = PathBuf::from(format!("{}.md", &name)).join(zk_workdir(&zk_directory)?);
+    std::fs::write(&filepath, &content)?;
     Ok(())
 }
 
@@ -107,15 +132,15 @@ fn main() {
                 "zk project created in {}",
                 init_dir.as_os_str().to_str().unwrap()
             ),
-            Err(e) => eprintln!("{}", e),
+            Err(e) => panic!("{}", e),
         },
         Commands::New {
             name,
             root,
             interactive,
-        } => match new(name, root, interactive) {
+        } => match new(name, root, interactive, args.zk_directory) {
             Ok(_) => println!("new done success"),
-            Err(_) => eprintln!("new error"),
+            Err(e) => panic!("new error, {}", e),
         },
     };
 }
